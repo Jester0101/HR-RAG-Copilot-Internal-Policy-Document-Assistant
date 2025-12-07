@@ -1,0 +1,121 @@
+
+⚠️ NOTE: To adapt this project for your own company, change the company name inside `server.js` prompt section (replace “BluePeak Creative Group” with your company name).
+
+This project is an internal HR Copilot for the fictional company BluePeak Creative Group.
+It uses:
+
+• Next.js frontend
+• Node.js backend
+• RAG (Retrieval-Augmented Generation) powered by OpenAI embeddings
+• Your own HR documents (markdown files)
+
+With it, you can ask internal questions like:
+
+“How many PTO days do employees receive?”
+“What is the probation period?”
+“What does the NDA say about confidential info?”
+“What documents are required for onboarding?”
+
+1. Requirements
+
+Make sure you have:
+
+• Node.js 18+ installed
+• npm installed
+• OpenAI API key
+
+2. Set up Backend
+
+Move into backend folder:
+cd backend
+
+Install required packages:
+npm install
+
+Create .env file (inside backend folder):
+OPENAI_API_KEY=your_key_here
+
+Make sure your HR documents are inside:
+backend/data/
+Allowed formats: .md or .txt.
+
+Example files:
+
+EmployeeHandbook.md
+EmploymentContract.md
+Hr_POLICIES_and_PROCEDURES_MANUAL.md
+NDA.md
+JOB_DESCRIPTIONS.md
+ONBOARDING_CHECKLIST.md
+ORGANIZATIONAL_CHART.md
+ExitChecklist.md
+
+Start backend:
+node server.js
+
+If everything is correct, you will see:
+
+📄 Loading documents…
+🧩 Total chunks: …
+🧠 Computing embeddings…
+✅ In-memory vector index ready.
+🚀 Backend running on [http://localhost:3001](http://localhost:3001)
+
+4. Set up Frontend (Next.js)
+
+Move into frontend folder:
+cd ../frontend
+
+Install dependencies:
+npm install
+
+Run frontend dev server:
+npm run dev
+
+Open in browser:
+[http://localhost:3000](http://localhost:3000)
+You will see a chat UI.
+
+5. How to Use
+
+Ask questions like:
+
+“How many PTO days do employees receive?”
+“What is the probation period?”
+“What does the NDA say about confidential information?”
+“What should a new employee do on their first day?”
+
+The assistant will:
+
+• search your documents using embeddings
+• pick the most relevant chunks
+• answer strictly from the document content
+• show exactly which files were used
+
+If the answer does NOT exist in the documents, you’ll see:
+
+“Information not found in company documents.”
+
+This prevents hallucinations.
+
+6. Testing the Backend (optional)
+
+You can test the backend separately with PowerShell:
+
+Invoke-RestMethod -Uri "[http://localhost:3001/ask](http://localhost:3001/ask)" -Method Post -ContentType "application/json" -Body '{"question":"What is the probation period?"}'
+
+7. Troubleshooting
+
+Backend shows “Cannot find OpenAI key” → Check .env file: OPENAI_API_KEY=sk-…
+“Information not found” → The document does not contain the answer. Add it and restart backend.
+“Fetch failed” in frontend → Backend must be running on [http://localhost:3001](http://localhost:3001)
+
+8. Summary
+
+Once both servers are running:
+
+Backend: [http://localhost:3001](http://localhost:3001)
+Frontend: [http://localhost:3000](http://localhost:3000)
+
+You now have a fully working RAG HR Assistant with document search, embeddings, GPT responses, and full hallucination protection.
+
