@@ -113,83 +113,18 @@ function detectDocType(fileName) {
   return "OTHER";
 }
 
-// ===== CHOOSE DOC TYPES BY QUESTION =====
-function chooseDocTypesForQuestion(question) {
+// ===== DETECT ORG CHART QUERIES =====
+// Единственная оставшаяся keyword-проверка для спец-режима ORG_CHART
+function isOrgChartQuery(question) {
   const q = question.toLowerCase();
-  const types = new Set();
-
-  if (
-    q.includes("vacation") || q.includes("holiday") || q.includes("pto") ||
-    q.includes("leave") || q.includes("sick") || q.includes("absence") ||
-    q.includes("benefit") || q.includes("working hours") || 
-    q.includes("work hours") || q.includes("schedule") ||
-    q.includes("remote") || q.includes("hybrid")
-  ) {
-    types.add("HR_POLICY");
-    types.add("EMPLOYEE_HANDBOOK");
-  }
-
-  if (
-    q.includes("salary") || q.includes("pay") || q.includes("compensation") ||
-    q.includes("bonus") || q.includes("raise")
-  ) {
-    types.add("HR_POLICY");
-    types.add("EMPLOYEE_HANDBOOK");
-    types.add("CONTRACT");
-  }
-
-  if (
-    q.includes("probation") || q.includes("trial period") ||
-    q.includes("notice period") || q.includes("term of employment") ||
-    q.includes("contract")
-  ) {
-    types.add("CONTRACT");
-    types.add("HR_POLICY");
-  }
-
-  if (
-    q.includes("role") || q.includes("responsibilities") ||
-    q.includes("duties") || q.includes("what does") ||
-    q.includes("job description") || q.includes("position")
-  ) {
-    types.add("JOB_DESCRIPTIONS");
-  }
-
-  if (
-    q.includes("org chart") || q.includes("organizational chart") ||
-    q.includes("structure") || q.includes("department") ||
-    q.includes("report to") || q.includes("who do i report")
-  ) {
-    types.add("ORG_CHART");
-  }
-
-  if (
-    q.includes("onboarding") || q.includes("first day") ||
-    q.includes("new employee") || q.includes("start date") ||
-    q.includes("orientation")
-  ) {
-    types.add("ONBOARDING");
-    types.add("EMPLOYEE_HANDBOOK");
-  }
-
-  if (
-    q.includes("resign") || q.includes("resignation") ||
-    q.includes("termination") || q.includes("offboarding") ||
-    q.includes("last day") || q.includes("exit")
-  ) {
-    types.add("EXIT");
-    types.add("CONTRACT");
-  }
-
-  if (
-    q.includes("nda") || q.includes("confidential") ||
-    q.includes("confidentiality") || q.includes("non-disclosure") ||
-    q.includes("secrecy")
-  ) {
-    types.add("NDA");
-  }
-
-  return Array.from(types);
+  const orgKeywords = [
+    "job", "jobs", "role", "roles", "position", "positions",
+    "org chart", "organizational chart", "organization chart",
+    "structure", "organizational structure", "department", "departments",
+    "team", "teams", "what type of jobs", "list of jobs",
+    "list roles", "types of jobs", "who reports to"
+  ];
+  return orgKeywords.some(key => q.includes(key));
 }
 
 // ===== COSINE SIMILARITY =====
@@ -265,12 +200,12 @@ async function buildVectorIndex() {
 const indexPromise = buildVectorIndex();
 
 // ===== HYBRID SEARCH FUNCTION =====
-async function hybridSearch(question, filterFn, { bm25Index, vectorIndex, embeddings, docs }) {
+async function hybridSearch(question, filterFn, { bm25Index, vectorIndex, embeddings }) {
   // Step 1: Get candidates from BM25
   console.log(`🔍 BM25 search for top ${BM25_CANDIDATES} candidates...`);
   const bm25Results = bm25Index.search(question, BM25_CANDIDATES);
   
-  // Filter candidates by docType if needed
+  // Filter candidates by docType if needed (only for ORG_CHART special mode)
   let candidates = bm25Results;
   if (filterFn) {
     candidates = bm25Results.filter(result => {
@@ -285,7 +220,7 @@ async function hybridSearch(question, filterFn, { bm25Index, vectorIndex, embedd
     return [];
   }
 
-  // Step 2: Rerank with embeddings
+  // Step 2: Rerank with embeddings (semantic similarity)
   console.log("🧠 Reranking with embeddings...");
   const queryEmbedding = await embeddings.embedQuery(question);
   
@@ -300,7 +235,7 @@ async function hybridSearch(question, filterFn, { bm25Index, vectorIndex, embedd
     };
   });
 
-  // Sort by cosine similarity
+  // Sort by cosine similarity (embeddings decide relevance)
   reranked.sort((a, b) => b.score - a.score);
 
   // Return top results
@@ -316,23 +251,11 @@ app.post("/ask", async (req, res) => {
     }
 
     const indexData = await indexPromise;
-    const { vectorIndex } = indexData;
-    const q = question.toLowerCase();
-
-    // Keywords for org chart queries
-    const orgKeywords = [
-      "job", "jobs", "role", "roles", "position", "positions",
-      "org chart", "organizational chart", "organization chart",
-      "structure", "organizational structure", "department", "departments",
-      "team", "teams", "what type of jobs", "list of jobs",
-      "list roles", "types of jobs"
-    ];
-
-    const isOrgQuery = orgKeywords.some(key => q.includes(key));
     let results;
 
     // ===== SPECIAL MODE: ORG_CHART =====
-    if (isOrgQuery) {
+    // Единственный случай, когда мы используем keyword-фильтрацию
+    if (isOrgChartQuery(question)) {
       console.log("🏢 Org-chart query detected. Searching ORG_CHART docs first...");
       
       // Try hybrid search with ORG_CHART filter
@@ -344,30 +267,14 @@ app.post("/ask", async (req, res) => {
 
       // Fallback if no results
       if (results.length === 0) {
-        console.log("⚠️ No ORG_CHART results, falling back to all docs");
+        console.log("⚠️ No ORG_CHART results, falling back to full hybrid search");
         results = await hybridSearch(question, null, indexData);
       }
     } else {
-      // ===== NORMAL MODE: HYBRID SEARCH =====
-      const docTypes = chooseDocTypesForQuestion(question);
-      
-      if (docTypes.length > 0) {
-        console.log("🎯 Filtering by docTypes:", docTypes);
-        results = await hybridSearch(
-          question,
-          doc => docTypes.includes(doc.metadata.docType),
-          indexData
-        );
-
-        // Fallback if no results
-        if (results.length === 0) {
-          console.log("⚠️ No results with filter, searching all docs");
-          results = await hybridSearch(question, null, indexData);
-        }
-      } else {
-        console.log("ℹ️ No docType filter, searching all docs");
-        results = await hybridSearch(question, null, indexData);
-      }
+      // ===== NORMAL MODE: PURE HYBRID SEARCH =====
+      // Никаких keyword-фильтров! BM25 + embeddings сами найдут релевантные документы
+      console.log("🔍 Running full hybrid search (BM25 + embeddings)...");
+      results = await hybridSearch(question, null, indexData);
     }
 
     // ===== BUILD CONTEXT =====
