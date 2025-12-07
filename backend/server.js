@@ -31,14 +31,10 @@ class BM25 {
   }
 
   _buildIndex() {
-    // Tokenize all documents
     this.tokenizedDocs = this.documents.map(doc => this._tokenize(doc));
-    
-    // Calculate document lengths
     this.docLengths = this.tokenizedDocs.map(tokens => tokens.length);
     this.avgDocLength = this.docLengths.reduce((a, b) => a + b, 0) / this.docCount;
     
-    // Calculate IDF for each term
     const docFreq = {};
     this.tokenizedDocs.forEach(tokens => {
       const uniqueTokens = [...new Set(tokens)];
@@ -47,7 +43,6 @@ class BM25 {
       });
     });
     
-    // IDF formula: log((N - df + 0.5) / (df + 0.5) + 1)
     for (const term in docFreq) {
       const df = docFreq[term];
       this.idf[term] = Math.log((this.docCount - df + 0.5) / (df + 0.5) + 1);
@@ -63,13 +58,11 @@ class BM25 {
       const docLength = this.docLengths[i];
       const docTokens = this.tokenizedDocs[i];
       
-      // Count term frequencies in document
       const termFreq = {};
       docTokens.forEach(token => {
         termFreq[token] = (termFreq[token] || 0) + 1;
       });
 
-      // Calculate BM25 score
       queryTokens.forEach(term => {
         if (term in this.idf) {
           const tf = termFreq[term] || 0;
@@ -82,9 +75,42 @@ class BM25 {
       scores.push({ index: i, score });
     }
 
-    // Sort by score and return top N
     scores.sort((a, b) => b.score - a.score);
     return scores.slice(0, topN);
+  }
+}
+
+// ===== QUERY CACHE =====
+class QueryCache {
+  constructor(maxSize = 1000) {
+    this.cache = new Map();
+    this.maxSize = maxSize;
+    this.hits = 0;
+    this.misses = 0;
+  }
+
+  get(key) {
+    const normalized = key.toLowerCase().trim();
+    if (this.cache.has(normalized)) {
+      this.hits++;
+      return this.cache.get(normalized);
+    }
+    this.misses++;
+    return null;
+  }
+
+  set(key, value) {
+    const normalized = key.toLowerCase().trim();
+    if (this.cache.size >= this.maxSize) {
+      const firstKey = this.cache.keys().next().value;
+      this.cache.delete(firstKey);
+    }
+    this.cache.set(normalized, value);
+  }
+
+  getHitRate() {
+    const total = this.hits + this.misses;
+    return total > 0 ? (this.hits / total * 100).toFixed(2) : 0;
   }
 }
 
@@ -92,12 +118,20 @@ class BM25 {
 const DATA_DIR = "./data";
 const PORT = 3001;
 const MODEL_NAME = "gpt-4o-mini";
-const BM25_CANDIDATES = 80; // Number of candidates from BM25
-const FINAL_RESULTS = 20;   // Final results after rerank
+const BM25_CANDIDATES = 80;
+const FINAL_RESULTS = 20;
+const RRF_K = 60;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+const embeddingCache = new QueryCache(500);
+const metrics = {
+  searches: 0,
+  totalLatency: 0,
+  avgScores: [],
+};
 
 // ===== DOC TYPE DETECTION =====
 function detectDocType(fileName) {
@@ -113,8 +147,30 @@ function detectDocType(fileName) {
   return "OTHER";
 }
 
+// ===== QUERY EXPANSION =====
+function expandQuery(question) {
+  const synonyms = {
+    'vacation': ['vacation', 'holiday', 'pto', 'time off', 'leave', 'annual leave'],
+    'salary': ['salary', 'compensation', 'pay', 'wage', 'remuneration', 'payment'],
+    'boss': ['boss', 'manager', 'supervisor', 'line manager', 'report to'],
+    'remote': ['remote', 'work from home', 'wfh', 'telecommute', 'distributed'],
+    'benefits': ['benefits', 'perks', 'health insurance', 'insurance', 'wellness'],
+  };
+  
+  const lower = question.toLowerCase();
+  let expanded = question;
+  
+  for (const [key, expansionList] of Object.entries(synonyms)) {
+    if (lower.includes(key)) {
+      expanded += ' ' + expansionList.slice(1).join(' ');
+      break; // Добавляем только один набор синонимов
+    }
+  }
+  
+  return expanded;
+}
+
 // ===== DETECT ORG CHART QUERIES =====
-// Единственная оставшаяся keyword-проверка для спец-режима ORG_CHART
 function isOrgChartQuery(question) {
   const q = question.toLowerCase();
   const orgKeywords = [
@@ -129,18 +185,36 @@ function isOrgChartQuery(question) {
 
 // ===== COSINE SIMILARITY =====
 function cosineSimilarity(vecA, vecB) {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
+  let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < vecA.length; i++) {
-    const a = vecA[i];
-    const b = vecB[i];
-    dot += a * b;
-    normA += a * a;
-    normB += b * b;
+    dot += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
   }
-  if (normA === 0 || normB === 0) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  return normA === 0 || normB === 0 ? 0 : dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+// ===== RECIPROCAL RANK FUSION (RRF) =====
+function reciprocalRankFusion(bm25Results, embeddingScores, k = RRF_K) {
+  const rrfScores = new Map();
+  
+  // BM25 ranks
+  bm25Results.forEach((item, rank) => {
+    const id = item.index;
+    const rrfScore = 1 / (k + rank + 1);
+    rrfScores.set(id, (rrfScores.get(id) || 0) + rrfScore);
+  });
+  
+  // Embedding ranks (уже отсортированы по similarity)
+  embeddingScores.forEach((item, rank) => {
+    const id = item.index;
+    const rrfScore = 1 / (k + rank + 1);
+    rrfScores.set(id, (rrfScores.get(id) || 0) + rrfScore);
+  });
+  
+  return Array.from(rrfScores.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([index, score]) => ({ index, rrfScore: score }));
 }
 
 // ===== BUILD VECTOR INDEX WITH BM25 =====
@@ -178,13 +252,17 @@ async function buildVectorIndex() {
   const bm25Index = new BM25(bm25Texts);
   console.log("✅ BM25 index ready");
 
-  // Compute embeddings
+  // Compute embeddings with enriched metadata
   const embeddings = new OpenAIEmbeddings({
     apiKey: process.env.OPENAI_API_KEY,
   });
 
   console.log("🧠 Computing embeddings...");
-  const vectors = await embeddings.embedDocuments(bm25Texts);
+  // Обогащаем текст метаданными для лучшего поиска
+  const enrichedTexts = docs.map(doc => 
+    `[${doc.metadata.docType}] ${doc.pageContent}`
+  );
+  const vectors = await embeddings.embedDocuments(enrichedTexts);
 
   const vectorIndex = docs.map((doc, i) => ({
     embedding: vectors[i],
@@ -199,20 +277,26 @@ async function buildVectorIndex() {
 
 const indexPromise = buildVectorIndex();
 
-// ===== HYBRID SEARCH FUNCTION =====
-async function hybridSearch(question, filterFn, { bm25Index, vectorIndex, embeddings }) {
-  // Step 1: Get candidates from BM25
-  console.log(`🔍 BM25 search for top ${BM25_CANDIDATES} candidates...`);
-  const bm25Results = bm25Index.search(question, BM25_CANDIDATES);
+// ===== HYBRID SEARCH WITH RRF =====
+async function hybridSearchRRF(question, filterFn, { bm25Index, vectorIndex, embeddings }) {
+  const startTime = Date.now();
   
-  // Filter candidates by docType if needed (only for ORG_CHART special mode)
+  // Query expansion
+  const expandedQuery = expandQuery(question);
+  console.log(`🔍 Expanded query: "${expandedQuery}"`);
+  
+  // Step 1: BM25 search
+  console.log(`📊 BM25 search for top ${BM25_CANDIDATES} candidates...`);
+  const bm25Results = bm25Index.search(expandedQuery, BM25_CANDIDATES);
+  
+  // Filter if needed
   let candidates = bm25Results;
   if (filterFn) {
     candidates = bm25Results.filter(result => {
       const doc = vectorIndex[result.index];
       return filterFn(doc);
     });
-    console.log(`🎯 Filtered to ${candidates.length} candidates by docType`);
+    console.log(`🎯 Filtered to ${candidates.length} candidates`);
   }
 
   if (candidates.length === 0) {
@@ -220,26 +304,59 @@ async function hybridSearch(question, filterFn, { bm25Index, vectorIndex, embedd
     return [];
   }
 
-  // Step 2: Rerank with embeddings (semantic similarity)
-  console.log("🧠 Reranking with embeddings...");
-  const queryEmbedding = await embeddings.embedQuery(question);
+  // Step 2: Get or compute query embedding
+  let queryEmbedding = embeddingCache.get(question);
+  if (!queryEmbedding) {
+    console.log("🧠 Computing query embedding...");
+    queryEmbedding = await embeddings.embedQuery(expandedQuery);
+    embeddingCache.set(question, queryEmbedding);
+  } else {
+    console.log(`💾 Using cached embedding (hit rate: ${embeddingCache.getHitRate()}%)`);
+  }
   
-  const reranked = candidates.map(candidate => {
+  // Step 3: Compute semantic similarity for candidates
+  const embeddingScores = candidates.map(candidate => {
     const doc = vectorIndex[candidate.index];
     const similarity = cosineSimilarity(queryEmbedding, doc.embedding);
     return {
-      pageContent: doc.pageContent,
-      metadata: doc.metadata,
-      score: similarity,
+      index: candidate.index,
+      embeddingScore: similarity,
       bm25Score: candidate.score,
     };
   });
 
-  // Sort by cosine similarity (embeddings decide relevance)
-  reranked.sort((a, b) => b.score - a.score);
+  // Sort by embedding score
+  embeddingScores.sort((a, b) => b.embeddingScore - a.embeddingScore);
 
-  // Return top results
-  return reranked.slice(0, FINAL_RESULTS);
+  // Step 4: Reciprocal Rank Fusion
+  console.log("🔀 Applying Reciprocal Rank Fusion...");
+  const fusedResults = reciprocalRankFusion(candidates, embeddingScores);
+
+  // Step 5: Build final results
+  const finalResults = fusedResults.slice(0, FINAL_RESULTS).map(item => {
+    const doc = vectorIndex[item.index];
+    const embScore = embeddingScores.find(e => e.index === item.index);
+    
+    return {
+      pageContent: doc.pageContent,
+      metadata: doc.metadata,
+      rrfScore: item.rrfScore,
+      embeddingScore: embScore.embeddingScore,
+      bm25Score: embScore.bm25Score,
+    };
+  });
+
+  const latency = Date.now() - startTime;
+  console.log(`✅ Search completed in ${latency}ms`);
+  
+  // Update metrics
+  metrics.searches++;
+  metrics.totalLatency += latency;
+  metrics.avgScores.push(
+    finalResults.reduce((sum, r) => sum + r.rrfScore, 0) / finalResults.length
+  );
+
+  return finalResults;
 }
 
 // ===== /ask ENDPOINT =====
@@ -253,31 +370,25 @@ app.post("/ask", async (req, res) => {
     const indexData = await indexPromise;
     let results;
 
-    // ===== SPECIAL MODE: ORG_CHART =====
-    // Единственный случай, когда мы используем keyword-фильтрацию
+    // ORG_CHART special mode
     if (isOrgChartQuery(question)) {
-      console.log("🏢 Org-chart query detected. Searching ORG_CHART docs first...");
-      
-      // Try hybrid search with ORG_CHART filter
-      results = await hybridSearch(
+      console.log("🏢 Org-chart query detected");
+      results = await hybridSearchRRF(
         question,
         doc => doc.metadata.docType === "ORG_CHART",
         indexData
       );
 
-      // Fallback if no results
       if (results.length === 0) {
-        console.log("⚠️ No ORG_CHART results, falling back to full hybrid search");
-        results = await hybridSearch(question, null, indexData);
+        console.log("⚠️ Fallback to full search");
+        results = await hybridSearchRRF(question, null, indexData);
       }
     } else {
-      // ===== NORMAL MODE: PURE HYBRID SEARCH =====
-      // Никаких keyword-фильтров! BM25 + embeddings сами найдут релевантные документы
-      console.log("🔍 Running full hybrid search (BM25 + embeddings)...");
-      results = await hybridSearch(question, null, indexData);
+      console.log("🔍 Running full hybrid search with RRF");
+      results = await hybridSearchRRF(question, null, indexData);
     }
 
-    // ===== BUILD CONTEXT =====
+    // Build context
     const contextBlocks = results.map((doc, idx) => {
       const preview = doc.pageContent.slice(0, 500).replace(/\s+/g, " ");
       return `[#${idx + 1}] SOURCE_FILE: ${doc.metadata.sourceFile} | DOC_TYPE: ${doc.metadata.docType}\n${preview}`;
@@ -285,7 +396,7 @@ app.post("/ask", async (req, res) => {
 
     const context = contextBlocks.join("\n\n");
 
-    // ===== CALL LLM =====
+    // Call LLM
     const model = new ChatOpenAI({
       apiKey: process.env.OPENAI_API_KEY,
       modelName: MODEL_NAME,
@@ -333,9 +444,14 @@ QUESTION: ${question}`.trim();
       sources: results.map(doc => ({
         file: doc.metadata.sourceFile,
         docType: doc.metadata.docType,
-        score: doc.score,
+        rrfScore: doc.rrfScore,
+        embeddingScore: doc.embeddingScore,
         bm25Score: doc.bm25Score,
       })),
+      meta: {
+        cacheHitRate: embeddingCache.getHitRate(),
+        searchCount: metrics.searches,
+      }
     });
   } catch (err) {
     console.error("❌ Error in /ask:", err);
@@ -343,7 +459,32 @@ QUESTION: ${question}`.trim();
   }
 });
 
+// ===== METRICS ENDPOINT =====
+app.get("/metrics", (req, res) => {
+  const avgLatency = metrics.totalLatency / Math.max(metrics.searches, 1);
+  const avgScore = metrics.avgScores.length > 0
+    ? metrics.avgScores.reduce((a, b) => a + b, 0) / metrics.avgScores.length
+    : 0;
+
+  res.json({
+    totalSearches: metrics.searches,
+    avgLatency: avgLatency.toFixed(2),
+    avgRelevanceScore: avgScore.toFixed(4),
+    cacheHitRate: embeddingCache.getHitRate(),
+    cacheStats: {
+      hits: embeddingCache.hits,
+      misses: embeddingCache.misses,
+    }
+  });
+});
+
+// ===== HEALTH CHECK =====
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", uptime: process.uptime() });
+});
+
 // ===== START SERVER =====
 app.listen(PORT, () => {
   console.log(`🚀 Backend running on http://localhost:${PORT}`);
+  console.log(`📊 Metrics available at http://localhost:${PORT}/metrics`);
 });
