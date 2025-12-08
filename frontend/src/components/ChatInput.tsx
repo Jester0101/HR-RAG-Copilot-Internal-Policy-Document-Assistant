@@ -40,7 +40,7 @@ export const ChatInput: React.FC<Props> = ({
     >
       <div className="flex items-end gap-3">
         <div className="flex-1 relative">
-          <div className={`relative transition-all duration-300 ${isFocused ? 'ring-2 ring-blue-500/50' : ''}`}>
+          <div className={`relative transition-all duration-300`}>
             <textarea
               className="w-full resize-none bg-white/5 border border-white/10 rounded-xl px-5 py-4 text-sm text-white placeholder-white/50 focus:outline-none min-h-[60px] max-h-48 backdrop-blur-sm transition-all"
               placeholder='Ask about policies, benefits, or anything HR-related...'
