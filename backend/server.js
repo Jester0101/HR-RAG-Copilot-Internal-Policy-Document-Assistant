@@ -338,7 +338,7 @@ async function buildVectorIndex() {
     });
   }
 
-  console.log(`📚 Loaded ${rawDocs.length} documents. Splitting...`);
+  console.log(`Loaded ${rawDocs.length} documents. Splitting...`);
 
   const splitter = new RecursiveCharacterTextSplitter({
     chunkSize: 900,
@@ -346,12 +346,12 @@ async function buildVectorIndex() {
   });
 
   const docs = await splitter.splitDocuments(rawDocs);
-  console.log(`🧩 Total chunks: ${docs.length}`);
+  console.log(`Total chunks: ${docs.length}`);
   docCount = rawDocs.length;
   chunkCount = docs.length;
 
   // Build BM25 index
-  console.log("🔍 Building BM25 index...");
+  console.log("Building BM25 index...");
   const bm25Texts = docs.map(d => d.pageContent);
   const bm25Index = new BM25(bm25Texts);
   console.log("BM25 index ready");
@@ -401,13 +401,13 @@ async function hybridSearchRRF(
 
   let queryEmbedding = embeddingCache.get(expandedQuery);
   if (!queryEmbedding) {
-    console.log("🧠 Computing query embedding...");
+    console.log("Computing query embedding...");
     queryEmbedding = await embeddings.embedQuery(expandedQuery);
     embeddingCache.set(expandedQuery, queryEmbedding);
   } else {
     embeddingHit = true;
     console.log(
-      `💾 Using cached embedding (hit rate: ${embeddingCache.getHitRate()}%)`
+      `Using cached embedding (hit rate: ${embeddingCache.getHitRate()}%)`
     );
   }
 
@@ -415,7 +415,7 @@ async function hybridSearchRRF(
   const semanticHitEntry = semanticRetrievalCache.findSimilar(
     queryEmbedding,
     cosineSimilarity,
-    0.75 // threshold, tweak as you like
+    0.75 
   );
 
   if (semanticHitEntry) {

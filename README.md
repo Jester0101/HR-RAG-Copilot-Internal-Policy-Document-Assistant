@@ -17,9 +17,9 @@ With it, you can ask internal questions like:
 
 Make sure you have:
 
-• Node.js 18+ installed
-• npm installed
-• OpenAI API key
+- Node.js 18+ installed
+- npm installed
+- OpenAI API key
 
 2. Set up Backend
 
@@ -52,11 +52,11 @@ node server.js
 
 If everything is correct, you will see:
 
-📄 Loading documents…
-🧩 Total chunks: …
-🧠 Computing embeddings…
-✅ In-memory vector index ready.
-🚀 Backend running on [http://localhost:3001](http://localhost:3001)
+Loading documents…
+Total chunks: …
+Computing embeddings…
+In-memory vector index ready.
+Backend running on [http://localhost:3001](http://localhost:3001)
 
 4. Set up Frontend (Next.js)
 
@@ -84,10 +84,14 @@ Ask questions like:
 
 The assistant will:
 
-• search your documents using embeddings
-• pick the most relevant chunks
-• answer strictly from the document content
-• show exactly which files were used
+1. Query preprocessing (clean from punctuation and stop words) and tokenization
+2. Cache search. If a similar question was asked before - proceed to step .
+3. Retrieve the most relevant chunks with BM25
+4. Perform embedding similarity.
+5. Combine both results and select top-5 most relevant documents with Reciprocal Rank Fusion.
+6. Construct a prompt whith document chunks as context, chat history (if switched on) and current prompt.
+7. Answer strictly from the document content (temp = 0)
+8. Show exactly which chuncks were used
 
 If the answer does NOT exist in the documents, you’ll see:
 
@@ -103,9 +107,9 @@ Invoke-RestMethod -Uri "[http://localhost:3001/ask](http://localhost:3001/ask)" 
 
 7. Troubleshooting
 
-Backend shows “Cannot find OpenAI key” → Check .env file: OPENAI_API_KEY=sk-…
-“Information not found” → The document does not contain the answer. Add it and restart backend.
-“Fetch failed” in frontend → Backend must be running on [http://localhost:3001](http://localhost:3001)
+Backend shows “Cannot find OpenAI key” -> Check .env file: OPENAI_API_KEY=sk-…
+“Information not found” -> The document does not contain the answer. Add it and restart backend.
+“Fetch failed” in frontend -> Backend must be running on [http://localhost:3001](http://localhost:3001)
 
 8. Summary
 
