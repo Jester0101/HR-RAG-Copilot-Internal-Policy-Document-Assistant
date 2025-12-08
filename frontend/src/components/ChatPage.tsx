@@ -194,12 +194,12 @@ export const ChatPage: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-black text-gray-100 flex flex-col relative">
+    <div className="h-screen bg-black text-gray-100 flex flex-col relative overflow-hidden">
       <Header stats={stats} />
       
-      <main className="flex-1 flex flex-col max-w-6xl w-full mx-auto px-4 md:px-6 py-6 gap-6">
-        <div className="flex-1 flex gap-6">
-          <div className="flex-1 flex flex-col gap-6">
+      <main className="flex-1 flex flex-col max-w-6xl w-full mx-auto px-4 md:px-6 py-6 gap-6 min-h-0">
+        <div className="flex-1 flex gap-6 min-h-0">
+          <div className="flex-1 flex flex-col gap-6 min-h-0">
             <MessageList messages={messages} loading={loading} />
             
             {showQuickStart && messages.length <= 1 && (
@@ -260,7 +260,7 @@ export const ChatPage: React.FC = () => {
         </div>
       </main>
 
-      <footer className="border-t border-white/10 py-4 mt-8">
+      <footer className="border-t border-white/10 py-4 flex-shrink-0">
         <div className="max-w-6xl mx-auto px-4 md:px-6 text-center text-sm text-gray-400">
           <p>BluePeak AI Assistant v1.0 {new Date().getFullYear()}</p>
           <p className="mt-1">Answers are based on uploaded company documents and are for informational purposes only.</p>

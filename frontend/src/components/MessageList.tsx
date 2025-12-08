@@ -23,7 +23,7 @@ export const MessageList: React.FC<Props> = ({ messages, loading }) => {
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto rounded-2xl glass-effect p-6 space-y-8 scroll-smooth"
+      className="flex-1 overflow-y-auto rounded-2xl glass-effect p-6 space-y-8 scroll-smooth min-h-0"
     >
       {messages.length === 0 ? (
         <div className="h-full flex items-center justify-center text-center">

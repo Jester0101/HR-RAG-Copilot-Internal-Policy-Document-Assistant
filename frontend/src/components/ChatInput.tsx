@@ -38,18 +38,17 @@ export const ChatInput: React.FC<Props> = ({
       onSubmit={handleSubmit}
       className="mt-6 glass-effect rounded-2xl p-4 border border-white/10"
     >
-      <div className="flex items-end gap-3">
+      <div className="flex items-stretch gap-3">
         <div className="flex-1 relative">
           <div className={`relative transition-all duration-300`}>
             <textarea
-              className="w-full resize-none bg-white/5 border border-white/10 rounded-xl px-5 py-4 text-sm text-white placeholder-white/50 focus:outline-none min-h-[60px] max-h-48 backdrop-blur-sm transition-all"
+              className="w-full resize-none bg-white/5 border border-white/10 rounded-xl px-5 py-4 text-sm text-white placeholder-white/50 focus:outline-none h-[60px] backdrop-blur-sm transition-all"
               placeholder='Ask about policies, benefits, or anything HR-related...'
               value={value}
               onChange={(e) => onChange(e.target.value)}
               onKeyDown={handleKeyDown}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
-              rows={3}
             />
             <div className="absolute right-3 bottom-3 flex items-center gap-3">
               <kbd className="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-xs bg-white/10 border border-white/20 rounded">
@@ -65,9 +64,9 @@ export const ChatInput: React.FC<Props> = ({
         <button
           type="submit"
           disabled={loading || !value.trim()}
-          className="group relative overflow-hidden rounded-xl px-6 py-4 bg-gradient-to-r from-blue-600 to-emerald-500 text-white font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:from-blue-500 hover:to-emerald-400 transition-all duration-300 hover:scale-105 active:scale-95"
+          className="flex items-center justify-center rounded-xl px-4 min-h-[60px] h-[60px] bg-gradient-to-r from-blue-600 to-emerald-500 text-white font-semibold disabled:opacity-40"
         >
-          <span className="relative z-10 flex items-center gap-2">
+          <span className="flex items-center gap-2">
             {loading ? (
               <>
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -82,7 +81,6 @@ export const ChatInput: React.FC<Props> = ({
               </>
             )}
           </span>
-          <div className="absolute inset-0 bg-gradient-to-r from-blue-500/20 to-emerald-500/20 group-hover:opacity-100 opacity-0 transition-opacity" />
         </button>
       </div>
       
