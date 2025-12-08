@@ -321,7 +321,7 @@ function reciprocalRankFusion(bm25Results, embeddingScores, k = RRF_K) {
 
 // ===== BUILD VECTOR INDEX WITH BM25 =====
 async function buildVectorIndex() {
-  console.log("📄 Loading documents from:", DATA_DIR);
+  console.log("Loading documents from:", DATA_DIR);
   const files = fs.readdirSync(DATA_DIR);
   const rawDocs = [];
 
@@ -354,14 +354,14 @@ async function buildVectorIndex() {
   console.log("🔍 Building BM25 index...");
   const bm25Texts = docs.map(d => d.pageContent);
   const bm25Index = new BM25(bm25Texts);
-  console.log("✅ BM25 index ready");
+  console.log("BM25 index ready");
 
   // Compute embeddings with enriched metadata
   const embeddings = new OpenAIEmbeddings({
     apiKey: process.env.OPENAI_API_KEY,
   });
 
-  console.log("🧠 Computing embeddings...");
+  console.log("Computing embeddings...");
   // Обогащаем текст метаданными для лучшего поиска
   const enrichedTexts = docs.map(doc => 
     `[${doc.metadata.docType}] ${doc.pageContent}`
@@ -374,7 +374,7 @@ async function buildVectorIndex() {
     metadata: doc.metadata,
   }));
 
-  console.log("✅ Vector index ready");
+  console.log("Vector index ready");
 
   return { bm25Index, vectorIndex, embeddings, docs };
 }
@@ -461,7 +461,7 @@ async function hybridSearchRRF(
   }
 
   // === 3) No semantic hit → full BM25 + RRF ===
-  console.log(`📊 BM25 search for top ${BM25_CANDIDATES} candidates...`);
+  console.log(`BM25 search for top ${BM25_CANDIDATES} candidates...`);
   const bm25Results = bm25Index.search(expandedQuery, BM25_CANDIDATES);
 
   let candidates = bm25Results;
@@ -470,11 +470,11 @@ async function hybridSearchRRF(
       const doc = vectorIndex[result.index];
       return filterFn(doc);
     });
-    console.log(`🎯 Filtered to ${candidates.length} candidates`);
+    console.log(`Filtered to ${candidates.length} candidates`);
   }
 
   if (candidates.length === 0) {
-    console.log("⚠️ No candidates after filtering");
+    console.log("No candidates after filtering");
 
     const latency = Date.now() - startTime;
     metrics.searches++;
@@ -499,7 +499,7 @@ async function hybridSearchRRF(
 
   embeddingScores.sort((a, b) => b.embeddingScore - a.embeddingScore);
 
-  console.log("🔀 Applying Reciprocal Rank Fusion...");
+  console.log("Applying Reciprocal Rank Fusion...");
   const fusedResults = reciprocalRankFusion(candidates, embeddingScores);
 
   const finalResults = fusedResults.slice(0, FINAL_RESULTS).map((item) => {
@@ -517,7 +517,7 @@ async function hybridSearchRRF(
   });
 
   const latency = Date.now() - startTime;
-  console.log(`✅ Search completed in ${latency}ms`);
+  console.log(`Search completed in ${latency}ms`);
 
   metrics.searches++;
   metrics.totalLatency += latency;
@@ -544,9 +544,6 @@ async function hybridSearchRRF(
     results: finalResults,
   });
 
-  // unified cache metric:
-  //  - if embeddingHit was true (but semantic miss), it's still a "cache used"
-  //  - otherwise, pure miss (fresh embed + fresh retrieval)
   if (embeddingHit) {
     metrics.cacheHits++;
   } else {
@@ -577,7 +574,7 @@ app.post("/ask", async (req, res) => {
 
     // ORG_CHART special mode
     if (isOrgChartQuery(question)) {
-      console.log("🏢 Org-chart query detected");
+      console.log("Org-chart query detected");
       results = await hybridSearchRRF(
         question,
         doc => doc.metadata.docType === "ORG_CHART",
@@ -586,11 +583,11 @@ app.post("/ask", async (req, res) => {
       );
 
       if (results.length === 0) {
-        console.log("⚠️ Fallback to full search");
+        console.log("Fallback to full search");
         results = await hybridSearchRRF(question, null, indexData);
       }
     } else {
-      console.log("🔍 Running full hybrid search with RRF");
+      console.log("Running full hybrid search with RRF");
       results = await hybridSearchRRF(question, null, indexData, historyForRetrieval);
     }
 
@@ -707,7 +704,7 @@ QUESTION: ${question}`.trim();
       }
     });
   } catch (err) {
-    console.error("❌ Error in /ask:", err);
+    console.error("Error in /ask:", err);
     res.status(500).json({ error: "Server error" });
   }
 
@@ -743,7 +740,6 @@ app.get("/metrics", (req, res) => {
       misses: metrics.cacheMisses,
     },
 
-    // if you still want low-level debug info, you can keep:
     embeddingCacheRaw: {
       hits: embeddingCache.hits,
       misses: embeddingCache.misses,
