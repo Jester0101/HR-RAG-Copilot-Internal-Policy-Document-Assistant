@@ -1,6 +1,3 @@
-
-⚠️ NOTE: To adapt this project for your own company, change the company name inside `server.js` prompt section (replace “BluePeak Creative Group” with your company name).
-
 This project is an internal HR Copilot for the fictional company BluePeak Creative Group.
 It uses:
 

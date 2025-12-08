@@ -23,11 +23,19 @@ class BM25 {
   }
 
   _tokenize(text) {
+    const stopWords = new Set([
+      "the","a","an","and","or","but","if","to","of","in","on","for","with","as","at",
+      "by","from","this","that","these","those","is","are","was","were","be","been",
+      "it","its","he","she","they","them","we","you","your","our","their","i","me",
+      "my","mine","ours","yours","theirs","about","into","over","under","up","down",
+      "so","no","not","can","could","would","should","do","does","did"
+    ]);
+
     return text
       .toLowerCase()
       .replace(/[^\w\s]/g, " ")
       .split(/\s+/)
-      .filter(token => token.length > 2);
+      .filter(token => token.length > 2 && !stopWords.has(token));
   }
 
   _buildIndex() {
@@ -76,9 +84,18 @@ class BM25 {
     }
 
     scores.sort((a, b) => b.score - a.score);
+
+    console.log('[BM25] top results', scores.slice(0, 5).map(r => ({
+      index: r.index,
+      score: r.score,
+      preview: this.documents[r.index]?.slice(0, 80)
+    })));
     return scores.slice(0, topN);
   }
 }
+
+
+
 
 // ===== QUERY CACHE =====
 class QueryCache {
@@ -91,7 +108,14 @@ class QueryCache {
 
   get(key) {
     const normalized = key.toLowerCase().trim();
-    if (this.cache.has(normalized)) {
+    const has = this.cache.has(normalized);
+    console.log("[CACHE GET]", {
+      raw: key,
+      normalized,
+      hit: has,
+    });
+
+    if (has) {
       this.hits++;
       return this.cache.get(normalized);
     }
@@ -101,6 +125,11 @@ class QueryCache {
 
   set(key, value) {
     const normalized = key.toLowerCase().trim();
+    console.log("[CACHE SET]", {
+      raw: key,
+      normalized,
+    });
+
     if (this.cache.size >= this.maxSize) {
       const firstKey = this.cache.keys().next().value;
       this.cache.delete(firstKey);
@@ -114,24 +143,73 @@ class QueryCache {
   }
 }
 
+
+
+// ===== SEMANTIC RETRIEVAL CACHE =====
+class SemanticRetrievalCache {
+  constructor(maxSize = 100) {
+    this.entries = [];
+    this.maxSize = maxSize;
+  }
+
+  // entry: { embedding: number[], question: string, expandedQuery: string, results: any[] }
+  findSimilar(queryEmbedding, similarityFn, threshold = 0.70) {
+    if (this.entries.length === 0) return null;
+
+    let best = null;
+    let bestScore = -1;
+
+    for (const entry of this.entries) {
+      const score = similarityFn(queryEmbedding, entry.embedding);
+      if (score > bestScore) {
+        bestScore = score;
+        best = entry;
+      }
+    }
+
+    if (bestScore >= threshold) {
+      console.log("[SemanticCache] HIT", { bestScore, question: best.question });
+      return best;
+    }
+
+    console.log("[SemanticCache] MISS", { bestScore });
+    return null;
+  }
+
+  add(entry) {
+    if (this.entries.length >= this.maxSize) {
+      this.entries.shift(); // simple FIFO
+    }
+    this.entries.push(entry);
+  }
+}
+
+
 // ===== SETTINGS =====
 const DATA_DIR = "./data";
 const PORT = 3001;
 const MODEL_NAME = "gpt-4o-mini";
-const BM25_CANDIDATES = 80;
-const FINAL_RESULTS = 20;
-const RRF_K = 60;
+const BM25_CANDIDATES = 50;
+const FINAL_RESULTS = 5;
+const RRF_K = 10;
+let docCount = 0;
+let chunkCount = 0;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const embeddingCache = new QueryCache(500);
+const semanticRetrievalCache = new SemanticRetrievalCache(100);
+
 const metrics = {
   searches: 0,
   totalLatency: 0,
   avgScores: [],
+  cacheHits: 0,
+  cacheMisses: 0,
 };
+
 
 // ===== DOC TYPE DETECTION =====
 function detectDocType(fileName) {
@@ -181,6 +259,30 @@ function isOrgChartQuery(question) {
     "list roles", "types of jobs", "who reports to"
   ];
   return orgKeywords.some(key => q.includes(key));
+}
+
+// ===== SUGGESTIONS BUILDER =====
+function buildSuggestions(vectorIndex) {
+  const docTypeCounts = {};
+  const files = new Set();
+
+  vectorIndex.forEach(doc => {
+    const type = doc.metadata.docType || "OTHER";
+    docTypeCounts[type] = (docTypeCounts[type] || 0) + 1;
+    if (doc.metadata.sourceFile) files.add(doc.metadata.sourceFile);
+  });
+
+  const topDocTypes = Object.entries(docTypeCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([type]) => type.replace(/_/g, " ").toLowerCase());
+
+  const suggestedQueries = topDocTypes.map(type => `Ask about ${type}`);
+
+  return {
+    suggestedQueries,
+    availableFiles: Array.from(files),
+  };
 }
 
 // ===== COSINE SIMILARITY =====
@@ -245,6 +347,8 @@ async function buildVectorIndex() {
 
   const docs = await splitter.splitDocuments(rawDocs);
   console.log(`🧩 Total chunks: ${docs.length}`);
+  docCount = rawDocs.length;
+  chunkCount = docs.length;
 
   // Build BM25 index
   console.log("🔍 Building BM25 index...");
@@ -277,22 +381,92 @@ async function buildVectorIndex() {
 
 const indexPromise = buildVectorIndex();
 
-// ===== HYBRID SEARCH WITH RRF =====
-async function hybridSearchRRF(question, filterFn, { bm25Index, vectorIndex, embeddings }) {
+async function hybridSearchRRF(
+  question,
+  filterFn,
+  { bm25Index, vectorIndex, embeddings },
+  historyText = ""
+) {
   const startTime = Date.now();
-  
-  // Query expansion
-  const expandedQuery = expandQuery(question);
+
+  const retrievalQuery = historyText
+    ? `${historyText} ${question}`.trim()
+    : question;
+
+  const expandedQuery = expandQuery(retrievalQuery);
   console.log(`🔍 Expanded query: "${expandedQuery}"`);
-  
-  // Step 1: BM25 search
+
+  // === 1) Get or compute QUERY EMBEDDING (embedding cache) ===
+  let embeddingHit = false;
+
+  let queryEmbedding = embeddingCache.get(expandedQuery);
+  if (!queryEmbedding) {
+    console.log("🧠 Computing query embedding...");
+    queryEmbedding = await embeddings.embedQuery(expandedQuery);
+    embeddingCache.set(expandedQuery, queryEmbedding);
+  } else {
+    embeddingHit = true;
+    console.log(
+      `💾 Using cached embedding (hit rate: ${embeddingCache.getHitRate()}%)`
+    );
+  }
+
+  // === 2) Semantic retrieval cache (topic cache) ===
+  const semanticHitEntry = semanticRetrievalCache.findSimilar(
+    queryEmbedding,
+    cosineSimilarity,
+    0.75 // threshold, tweak as you like
+  );
+
+  if (semanticHitEntry) {
+    console.log("[Hybrid] Using semantic cache results");
+
+    let cachedResults = semanticHitEntry.results;
+
+    // Re-apply filter (e.g. org chart mode) if needed
+    if (filterFn) {
+      cachedResults = cachedResults.filter((r) =>
+        filterFn(vectorIndex[r._index])
+      );
+      console.log(
+        `[SemanticCache] After filterFn, ${cachedResults.length} results`
+      );
+      if (cachedResults.length === 0) {
+        console.log(
+          "[SemanticCache] Hit discarded because filterFn removed all candidates"
+        );
+      }
+    }
+
+    const latency = Date.now() - startTime;
+
+    metrics.searches++;
+    metrics.totalLatency += latency;
+    if (cachedResults.length > 0) {
+      metrics.avgScores.push(
+        cachedResults.reduce((sum, r) => sum + r.rrfScore, 0) /
+          cachedResults.length
+      );
+    }
+
+    // unified cache metric: either embedding OR semantic cache counts as hit
+    metrics.cacheHits++;
+
+    // IMPORTANT: we still only send
+    // - this call's history (built in /ask)
+    // - these cached docs (results)
+    // to the LLM. Prompt building happens later in /ask.
+
+    return cachedResults.slice(0, FINAL_RESULTS);
+  }
+
+  // === 3) No semantic hit → full BM25 + RRF ===
   console.log(`📊 BM25 search for top ${BM25_CANDIDATES} candidates...`);
   const bm25Results = bm25Index.search(expandedQuery, BM25_CANDIDATES);
-  
-  // Filter if needed
+
   let candidates = bm25Results;
   if (filterFn) {
-    candidates = bm25Results.filter(result => {
+    candidates = bm25Results.filter((result) => {
       const doc = vectorIndex[result.index];
       return filterFn(doc);
     });
@@ -301,21 +475,19 @@ async function hybridSearchRRF(question, filterFn, { bm25Index, vectorIndex, emb
 
   if (candidates.length === 0) {
     console.log("⚠️ No candidates after filtering");
+
+    const latency = Date.now() - startTime;
+    metrics.searches++;
+    metrics.totalLatency += latency;
+
+    // no retrieval → treat as cache miss for unified stats
+    metrics.cacheMisses++;
+
     return [];
   }
 
-  // Step 2: Get or compute query embedding
-  let queryEmbedding = embeddingCache.get(question);
-  if (!queryEmbedding) {
-    console.log("🧠 Computing query embedding...");
-    queryEmbedding = await embeddings.embedQuery(expandedQuery);
-    embeddingCache.set(question, queryEmbedding);
-  } else {
-    console.log(`💾 Using cached embedding (hit rate: ${embeddingCache.getHitRate()}%)`);
-  }
-  
-  // Step 3: Compute semantic similarity for candidates
-  const embeddingScores = candidates.map(candidate => {
+  // we already have queryEmbedding
+  const embeddingScores = candidates.map((candidate) => {
     const doc = vectorIndex[candidate.index];
     const similarity = cosineSimilarity(queryEmbedding, doc.embedding);
     return {
@@ -325,50 +497,83 @@ async function hybridSearchRRF(question, filterFn, { bm25Index, vectorIndex, emb
     };
   });
 
-  // Sort by embedding score
   embeddingScores.sort((a, b) => b.embeddingScore - a.embeddingScore);
 
-  // Step 4: Reciprocal Rank Fusion
   console.log("🔀 Applying Reciprocal Rank Fusion...");
   const fusedResults = reciprocalRankFusion(candidates, embeddingScores);
 
-  // Step 5: Build final results
-  const finalResults = fusedResults.slice(0, FINAL_RESULTS).map(item => {
+  const finalResults = fusedResults.slice(0, FINAL_RESULTS).map((item) => {
     const doc = vectorIndex[item.index];
-    const embScore = embeddingScores.find(e => e.index === item.index);
-    
+    const embScore = embeddingScores.find((e) => e.index === item.index);
+
     return {
       pageContent: doc.pageContent,
       metadata: doc.metadata,
       rrfScore: item.rrfScore,
       embeddingScore: embScore.embeddingScore,
       bm25Score: embScore.bm25Score,
+      _index: item.index, // keep original index for semantic cache/filtering
     };
   });
 
   const latency = Date.now() - startTime;
   console.log(`✅ Search completed in ${latency}ms`);
-  
-  // Update metrics
+
   metrics.searches++;
   metrics.totalLatency += latency;
   metrics.avgScores.push(
-    finalResults.reduce((sum, r) => sum + r.rrfScore, 0) / finalResults.length
+    finalResults.reduce((sum, r) => sum + r.rrfScore, 0) /
+      finalResults.length
   );
+
+  console.log(
+    "[Hybrid] top fused",
+    finalResults.slice(0, 5).map((r) => ({
+      file: r.metadata.sourceFile,
+      bm25: r.bm25Score,
+      emb: r.embeddingScore,
+      rrf: r.rrfScore,
+    }))
+  );
+
+  // === 4) Store retrieval into semantic cache ===
+  semanticRetrievalCache.add({
+    embedding: queryEmbedding,
+    question,
+    expandedQuery,
+    results: finalResults,
+  });
+
+  // unified cache metric:
+  //  - if embeddingHit was true (but semantic miss), it's still a "cache used"
+  //  - otherwise, pure miss (fresh embed + fresh retrieval)
+  if (embeddingHit) {
+    metrics.cacheHits++;
+  } else {
+    metrics.cacheMisses++;
+  }
 
   return finalResults;
 }
+
 
 // ===== /ask ENDPOINT =====
 app.post("/ask", async (req, res) => {
   try {
     const question = req.body.question;
+    const history = Array.isArray(req.body.history) ? req.body.history : [];
+
     if (!question || question.trim().length === 0) {
       return res.status(400).json({ error: "Question is required" });
     }
 
     const indexData = await indexPromise;
     let results;
+    const historyForRetrieval = history
+      .filter(msg => msg && typeof msg.content === "string")
+      .map(msg => msg.content)
+      .slice(-3)
+      .join(" ");
 
     // ORG_CHART special mode
     if (isOrgChartQuery(question)) {
@@ -376,7 +581,8 @@ app.post("/ask", async (req, res) => {
       results = await hybridSearchRRF(
         question,
         doc => doc.metadata.docType === "ORG_CHART",
-        indexData
+        indexData,
+        historyForRetrieval
       );
 
       if (results.length === 0) {
@@ -385,7 +591,40 @@ app.post("/ask", async (req, res) => {
       }
     } else {
       console.log("🔍 Running full hybrid search with RRF");
-      results = await hybridSearchRRF(question, null, indexData);
+      results = await hybridSearchRRF(question, null, indexData, historyForRetrieval);
+    }
+
+    const suggestions = buildSuggestions(indexData.vectorIndex);
+    const bestScore = results[0]?.rrfScore ?? 0;
+    const topEmbeddingScores = results.slice(0, 3).map(r => r.embeddingScore ?? 0);
+    const avgTopEmbedding = topEmbeddingScores.length > 0
+      ? topEmbeddingScores.reduce((sum, score) => sum + score, 0) / topEmbeddingScores.length
+      : 0;
+    const hasSemanticSupport = (results[0]?.embeddingScore ?? 0) >= 0.25 || avgTopEmbedding >= 0.2;
+    const hasKeywordSupport = results.slice(0, 3).some(r => (r.bm25Score ?? 0) > 0.2);
+    const weakSignal = results.length === 0 || (!hasSemanticSupport && !hasKeywordSupport) || bestScore < 0.0005;
+
+    console.log('[WeakSignal]', {
+      bestScore,
+      topEmbedding: results[0]?.embeddingScore,
+      avgTopEmbedding,
+      hasSemanticSupport,
+      hasKeywordSupport,
+      weakSignal
+    });
+
+    if (weakSignal) {
+      return res.json({
+        answer: "Information not found in company documents.",
+        chunks: [],
+        sources: [],
+        suggestions,
+        meta: {
+          cacheHitRate: embeddingCache.getHitRate(),
+          searchCount: metrics.searches,
+          weakSignal: true,
+        }
+      });
     }
 
     // Build context
@@ -395,6 +634,16 @@ app.post("/ask", async (req, res) => {
     });
 
     const context = contextBlocks.join("\n\n");
+
+    const formattedHistory = history
+      .filter(msg => msg && typeof msg.content === "string" && typeof msg.role === "string")
+      .slice(-6)
+      .map(msg => `${msg.role.toUpperCase()}: ${msg.content}`)
+      .join("\n");
+
+    const historySection = formattedHistory
+      ? `HISTORY (previous turns):\n${formattedHistory}\n\n`
+      : "";
 
     // Call LLM
     const model = new ChatOpenAI({
@@ -414,7 +663,8 @@ Mandatory rules:
 - Never use outside knowledge or assumptions.
 - Do NOT invent or guess policies, numbers, or missing details.
 - If the answer is not clearly and explicitly supported by the CONTEXT, or the information is incomplete, reply exactly: "Information not found in company documents."
-- If multiple snippets disagree or are ambiguous, reply: "Information not found in company documents."
+- If multiple snippets disagree or are ambiguous, then provide information from both sources.
+- If you cannot cite at least one numbered source from the CONTEXT, reply exactly: "Information not found in company documents."
 
 LIST QUESTIONS (roles, jobs, departments, org chart, benefits, steps, items):
 - Extract ALL items that appear in the CONTEXT — never partial.
@@ -431,10 +681,11 @@ Formatting:
 - Use short paragraphs or bullet points.
 - At the end write: "Sources: [#X], [#Y]".
 
-CONTEXT:
+${historySection}CONTEXT:
 ${context}
 
 QUESTION: ${question}`.trim();
+
 
     const response = await model.invoke(prompt);
 
@@ -448,35 +699,58 @@ QUESTION: ${question}`.trim();
         embeddingScore: doc.embeddingScore,
         bm25Score: doc.bm25Score,
       })),
+      suggestions,
       meta: {
         cacheHitRate: embeddingCache.getHitRate(),
         searchCount: metrics.searches,
+        weakSignal: false,
       }
     });
   } catch (err) {
     console.error("❌ Error in /ask:", err);
     res.status(500).json({ error: "Server error" });
   }
+
+ 
+
 });
+
 
 // ===== METRICS ENDPOINT =====
 app.get("/metrics", (req, res) => {
-  const avgLatency = metrics.totalLatency / Math.max(metrics.searches, 1);
-  const avgScore = metrics.avgScores.length > 0
-    ? metrics.avgScores.reduce((a, b) => a + b, 0) / metrics.avgScores.length
-    : 0;
+  const avgLatency =
+    metrics.totalLatency / Math.max(metrics.searches, 1);
+
+  const avgScore =
+    metrics.avgScores.length > 0
+      ? metrics.avgScores.reduce((a, b) => a + b, 0) /
+        metrics.avgScores.length
+      : 0;
+
+  const totalCacheOps = metrics.cacheHits + metrics.cacheMisses;
+  const unifiedCacheHitRate = totalCacheOps
+    ? (metrics.cacheHits / totalCacheOps * 100).toFixed(2)
+    : "0.00";
 
   res.json({
     totalSearches: metrics.searches,
     avgLatency: avgLatency.toFixed(2),
     avgRelevanceScore: avgScore.toFixed(4),
-    cacheHitRate: embeddingCache.getHitRate(),
+
+    cacheHitRate: unifiedCacheHitRate,
     cacheStats: {
+      hits: metrics.cacheHits,
+      misses: metrics.cacheMisses,
+    },
+
+    // if you still want low-level debug info, you can keep:
+    embeddingCacheRaw: {
       hits: embeddingCache.hits,
       misses: embeddingCache.misses,
-    }
+    },
   });
 });
+
 
 // ===== HEALTH CHECK =====
 app.get("/health", (req, res) => {

@@ -1,15 +1,30 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import type { Message } from "@/lib/types";
+import { isInfoNotFoundResponse } from "@/lib/messageUtils";
 
 type Props = {
   message: Message;
 };
 
+
 export const ChatMessage: React.FC<Props> = ({ message }) => {
   const [expandedSources, setExpandedSources] = useState(false);
+  const [openSourceIndex, setOpenSourceIndex] = useState<number | null>(null);
   const isUser = message.role === "user";
+  const [timestamp, setTimestamp] = useState<string | null>(null);
+  const isInfoNotFound = message.isInfoNotFound ?? isInfoNotFoundResponse(message.content);
+
+  useEffect(() => {
+    setTimestamp(
+      new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    );
+  }, []);
+
+  const bm25Max = message.sources && message.sources.length > 0
+    ? Math.max(...message.sources.map(s => s.bm25Score || 0))
+    : 0;
 
   return (
     <div className={`group flex gap-4 items-start ${isUser ? "justify-end" : ""}`}>
@@ -39,7 +54,7 @@ export const ChatMessage: React.FC<Props> = ({ message }) => {
         </div>
 
         {/* Sources section */}
-        {!isUser && message.sources && message.sources.length > 0 && (
+        {!isUser && !isInfoNotFound && message.sources && message.sources.length > 0 && (
           <div className="mt-4 pt-4 border-t border-white/10">
             <button
               onClick={() => setExpandedSources(!expandedSources)}
@@ -53,39 +68,58 @@ export const ChatMessage: React.FC<Props> = ({ message }) => {
 
             {expandedSources && (
               <div className="mt-3 space-y-2">
-                <div className="text-xs font-medium text-gray-400 mb-1">References:</div>
                 <ul className="space-y-2">
-                  {message.sources.map((s, i) => (
-                    <li
-                      key={`${s.file}-${i}`}
-                      className="text-xs p-2 bg-white/5 rounded-lg border border-white/5 hover:border-blue-500/30 transition-colors"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-[10px]">
-                              #{i + 1}
-                            </span>
-                            <span className="font-medium truncate">{s.file}</span>
-                          </div>
-                          <div className="text-gray-500 text-[10px]">{s.docType}</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="w-16">
-                            <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                              <div 
-                                className="h-full bg-gradient-to-r from-blue-500 to-emerald-400 rounded-full"
-                                style={{ width: `${Math.min(100, s.score * 100)}%` }}
-                              />
+                  {message.sources.map((s, i) => {
+                    const fill =
+                      bm25Max > 0 && s.bm25Score !== undefined
+                        ? Math.max(0, Math.min(100, (s.bm25Score / bm25Max) * 100))
+                        : 0;
+                    const isOpen = openSourceIndex === i;
+
+                    return (
+                      <li
+                        key={`${s.file}-${i}`}
+                        className="text-xs p-2 bg-white/5 rounded-lg border border-white/5 hover:border-blue-500/30 transition-colors"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setOpenSourceIndex(isOpen ? null : i)}
+                          className="w-full text-left"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-[10px]">
+                                  #{s.index || i + 1}
+                                </span>
+                                <span className="font-medium truncate">{s.file}</span>
+                              </div>
+                              <div className="text-gray-500 text-[10px]">{s.docType}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <div className="w-20">
+                                <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-gradient-to-r from-blue-500 to-emerald-400 rounded-full transition-all"
+                                    style={{ width: `${fill}%` }}
+                                  />
+                                </div>
+                              </div>
+                              <span className="text-[10px] font-mono text-gray-400">
+                                {s.bm25Score !== undefined ? s.bm25Score.toFixed(3) : "—"}
+                              </span>
                             </div>
                           </div>
-                          <span className="text-[10px] font-mono text-gray-400">
-                            {(s.score * 100).toFixed(1)}%
-                          </span>
-                        </div>
-                      </div>
-                    </li>
-                  ))}
+                        </button>
+
+                        {isOpen && s.chunk && (
+                          <div className="mt-2 p-2 rounded-md bg-white/5 border border-white/10 text-gray-200 text-xs leading-relaxed">
+                            {s.chunk}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             )}
@@ -93,9 +127,11 @@ export const ChatMessage: React.FC<Props> = ({ message }) => {
         )}
 
         {/* Timestamp */}
-        <div className={`absolute -bottom-6 text-[10px] text-gray-500 ${isUser ? 'right-0' : 'left-0'}`}>
-          {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-        </div>
+        {timestamp && (
+          <div className={`absolute -bottom-6 text-[10px] text-gray-500 ${isUser ? 'right-0' : 'left-0'}`}>
+            {timestamp}
+          </div>
+        )}
       </div>
 
       {/* User avatar */}

@@ -1,16 +1,11 @@
 "use client";
 
-interface Stats {
-  totalQueries: number;
-  avgResponseTime: number;
-}
+import type { MetricsSummary } from "@/lib/types";
 
-export function StatsPanel({ stats }: { stats: Stats }) {
-  const features = [
-    { label: "Document Coverage", value: "98%", color: "bg-emerald-500" },
-    { label: "Accuracy Score", value: "96%", color: "bg-blue-500" },
-    { label: "Uptime", value: "99.9%", color: "bg-green-500" },
-  ];
+export function StatsPanel({ stats }: { stats: MetricsSummary }) {
+  const totalCacheEvents = stats.cacheHits + stats.cacheMisses;
+  const hitPercent = totalCacheEvents > 0 ? Math.round((stats.cacheHits / totalCacheEvents) * 100) : 0;
+  const missPercent = totalCacheEvents > 0 ? Math.round((stats.cacheMisses / totalCacheEvents) * 100) : 0;
 
   return (
     <div className="hidden lg:block w-64 flex-shrink-0">
@@ -33,45 +28,56 @@ export function StatsPanel({ stats }: { stats: Stats }) {
               <span className="font-mono font-bold text-white">{stats.avgResponseTime.toFixed(0)}ms</span>
             </div>
             <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-400">Documents in memory</span>
+              <span className="font-mono font-bold text-white">{stats.docCount}</span>
+            </div>
+            <div className="flex justify-between items-center">
               <span className="text-sm text-gray-400">Active Sessions</span>
               <span className="font-mono font-bold text-white">1</span>
             </div>
           </div>
 
           <div className="pt-4 border-t border-white/10">
-            <h4 className="text-sm font-medium text-white mb-3">Features</h4>
+            <h4 className="text-sm font-medium text-white mb-3">Cache</h4>
             <div className="space-y-3">
-              {features.map((feature, idx) => (
-                <div key={idx} className="space-y-1">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-400">{feature.label}</span>
-                    <span className="font-medium text-white">{feature.value}</span>
-                  </div>
-                  <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                    <div 
-                      className={`h-full ${feature.color} rounded-full`}
-                      style={{ width: feature.value }}
-                    />
-                  </div>
+              <div className="space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Cache Hits</span>
+                  <span className="font-mono font-bold text-white">{stats.cacheHits}</span>
                 </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="pt-4 border-t border-white/10">
-            <div className="text-xs text-gray-400 space-y-2">
-              <p className="flex items-center gap-2">
-                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                System operational
-              </p>
-              <p className="flex items-center gap-2">
-                <span className="w-2 h-2 bg-blue-500 rounded-full" />
-                RAG processing enabled
-              </p>
-              <p className="flex items-center gap-2">
-                <span className="w-2 h-2 bg-purple-500 rounded-full" />
-                Real-time updates
-              </p>
+                <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-emerald-500 rounded-full"
+                    style={{ width: `${hitPercent}%` }}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Cache Misses</span>
+                  <span className="font-mono font-bold text-white">{stats.cacheMisses}</span>
+                </div>
+                <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-rose-500 rounded-full"
+                    style={{ width: `${missPercent}%` }}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Cache Hit Rate</span>
+                  <span className="font-mono font-bold text-white">
+                    {totalCacheEvents > 0 ? `${hitPercent}%` : "–"}
+                  </span>
+                </div>
+                <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-blue-500 rounded-full"
+                    style={{ width: `${hitPercent}%` }}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>
